@@ -2,10 +2,11 @@ import json
 import math
 import matplotlib.pyplot as plt
 import numpy as np
+import socket
 
 # === Simulation parameters ===
 dt = 0.1          # time step [s]
-L_lookahead = 5.0 # look-ahead distance [m]
+L_lookahead = 18 # look-ahead distance [m]
 
 # Vehicle parameters (m)
 LENGTH = 43
@@ -65,10 +66,26 @@ def getDistance(p1, p2):
 
 class Vehicle:
     """Rear-axle bicycle kinematics."""
-    def __init__(self, x, y, yaw, vel=0.0):
-        self.x = x; self.y = y; self.yaw = yaw; self.vel = vel
+
+    def __init__(self, x, y, yaw, vel=0, max_steering_angle_deg=30):
+        """
+        Define a vehicle class
+        :param x: float, x position
+        :param y: float, y position
+        :param yaw: float, vehicle heading
+        :param vel: float, velocity
+        :param max_steering_angle_deg: float, max steering angle in degrees
+        """
+        self.x = x
+        self.y = y
+        self.yaw = yaw
+        self.vel = vel
+        # Giới hạn góc lái là 30 độ (tức là từ -30 đến 30 độ)
+        self.max_steering_angle = math.radians(max_steering_angle_deg)  # convert to radians
 
     def update(self, acc, delta):
+        # Giới hạn góc lái trong phạm vi từ -30 độ đến 30 độ (tương đương với -math.radians(30) đến math.radians(30))
+        delta = max(-self.max_steering_angle, min(self.max_steering_angle, delta))
         # velocity update
         self.vel += acc * dt
         # position update
@@ -106,8 +123,35 @@ def loadTrajectory(filename):
     # list of [x,y,yaw]
     return data
 
+def send_control_command(sock, v, delta_rad):
+    """
+    Gửi lệnh điều khiển tới server qua TCP.
+    Định dạng:  "v,delta_deg\n"
+        v          : vận tốc (cm/s)
+        delta_deg  : góc lái, chuyển sang độ trước khi gửi
+    """
+    try:
+        delta_deg = math.degrees(delta_rad)  # rad → °
+        message = f"{v / 100:.3f},{delta_deg:.3f}\n"  # 3 chữ số lẻ cho gọn
+        sock.sendall(message.encode("utf-8"))
+    except Exception as e:
+        print(f"Lỗi khi gửi dữ liệu: {e}")
+
 
 def main():
+    # Địa chỉ IP và cổng TCP server
+    TCP_IP = "127.0.0.1"  # Thay bằng địa chỉ thực tế
+    TCP_PORT = 5000
+
+    # Tạo socket TCP
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.connect((TCP_IP, TCP_PORT))
+        print("Đã kết nối TCP tới server.")
+    except Exception as e:
+        print(f"Lỗi kết nối TCP: {e}")
+        return
+
     # load path
     path = loadTrajectory('path_data.json')
     xs = [p[0] for p in path]
@@ -115,7 +159,7 @@ def main():
     yaws = [p[2] for p in path]
 
     # initialize vehicle at first point, reverse speed
-    target_vel = -5.0  # m/s (negative => reverse)
+    target_vel = -10.0  # m/s (negative => reverse)
     ego = Vehicle(xs[0], ys[0], yaws[0], vel=target_vel)
 
     # controllers
@@ -128,7 +172,7 @@ def main():
     plt.figure(figsize=(8,6))
     goal = [xs[-1], ys[-1]]
 
-    while getDistance([ego.x, ego.y], goal) > 0.5:
+    while getDistance([ego.x, ego.y], goal) > 1:
         # look-ahead target
         tp = traj.getTargetPoint([ego.x, ego.y])
         # longitudinal control
@@ -147,6 +191,9 @@ def main():
 
         # update vehicle
         ego.update(acc, delta)
+
+        # Gửi lệnh (v, delta) qua TCP
+        send_control_command(sock, ego.vel, delta)
 
         history_x.append(ego.x)
         history_y.append(ego.y)

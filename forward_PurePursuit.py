@@ -2,9 +2,9 @@ import json
 import math
 import matplotlib.pyplot as plt
 import numpy as np
+import socket
 
-
-L = 5  # look ahead distance
+L = 38  # look ahead distance
 dt = 0.1  # discrete time
 
 # Vehicle parameters (m)
@@ -122,25 +122,31 @@ def getDistance(p1, p2):
 
 
 class Vehicle:
-    def __init__(self, x, y, yaw, vel=0):
+    def __init__(self, x, y, yaw, vel=0, max_steering_angle_deg=30):
         """
         Define a vehicle class
         :param x: float, x position
         :param y: float, y position
         :param yaw: float, vehicle heading
         :param vel: float, velocity
+        :param max_steering_angle_deg: float, max steering angle in degrees
         """
         self.x = x
         self.y = y
         self.yaw = yaw
         self.vel = vel
+        # Giới hạn góc lái là 30 độ (tức là từ -30 đến 30 độ)
+        self.max_steering_angle = math.radians(max_steering_angle_deg)  # convert to radians
 
     def update(self, acc, delta):
         """
-        Vehicle motion model, here we are using simple bycicle model
+        Vehicle motion model, here we are using simple bicycle model
         :param acc: float, acceleration
-        :param delta: float, heading control
+        :param delta: float, heading control (steering angle)
         """
+        # Giới hạn góc lái trong phạm vi từ -30 độ đến 30 độ (tương đương với -math.radians(30) đến math.radians(30))
+        delta = max(-self.max_steering_angle, min(self.max_steering_angle, delta))
+
         self.x += self.vel * math.cos(self.yaw) * dt
         self.y += self.vel * math.sin(self.yaw) * dt
         self.yaw += self.vel * math.tan(delta) / WB * dt
@@ -224,73 +230,90 @@ def load_trajectory_from_file(filename):
         return []
 
 
-# Các lớp và hàm khác vẫn giữ nguyên
-# Ví dụ như Vehicle, Trajectory, PI và các hàm điều khiển v.v...
+def send_control_command(sock, v, delta_rad):
+    """
+    Gửi lệnh điều khiển tới server qua TCP.
+    Định dạng:  "v,delta_deg\n"
+        v          : vận tốc (cm/s)
+        delta_deg  : góc lái, chuyển sang độ trước khi gửi
+    """
+    try:
+        delta_deg = math.degrees(delta_rad)  # rad → °
+        message = f"{v / 100:.3f},{delta_deg:.3f}\n"  # 3 chữ số lẻ cho gọn
+        sock.sendall(message.encode("utf-8"))
+    except Exception as e:
+        print(f"Lỗi khi gửi dữ liệu: {e}")
+
 
 def main():
+    # Địa chỉ IP và cổng TCP server
+    TCP_IP = "127.0.0.1"  # Thay bằng địa chỉ thực tế
+    TCP_PORT = 5000
+
+    # Tạo socket TCP
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.connect((TCP_IP, TCP_PORT))
+        print("Đã kết nối TCP tới server.")
+    except Exception as e:
+        print(f"Lỗi kết nối TCP: {e}")
+        return
+
     # Đọc quỹ đạo từ file JSON
-    json_file = "path_data.json"  # Đảm bảo file JSON chứa quỹ đạo
+    json_file = "path_data.json"
     traj_data = load_trajectory_from_file(json_file)
 
     if not traj_data:
         print("Quỹ đạo không được tải về, dừng chương trình.")
         return
 
-    # Tách quỹ đạo thành các giá trị x, y, yaw
     traj_x = [point[0] for point in traj_data]
     traj_y = [point[1] for point in traj_data]
     traj_yaw = [point[2] for point in traj_data]
 
-    # Điểm đầu tiên làm điểm bắt đầu cho phương tiện
-    start_x = traj_x[0]
-    start_y = traj_y[0]
-    start_yaw = traj_yaw[0]
-
-    # target velocity
+    start_x, start_y, start_yaw = traj_x[0], traj_y[0], traj_yaw[0]
     target_vel = 10
-
-    # Create trajectory object
     traj = Trajectory(traj_x, traj_y)
     goal = traj.getPoint(len(traj_x) - 1)
 
-    # Create vehicle and controller objects
-    ego = Vehicle(start_x, start_y, start_yaw)  # Điểm bắt đầu từ quỹ đạo
+    ego = Vehicle(start_x, start_y, start_yaw)
     PI_acc = PI()
     PI_yaw = PI()
 
-    traj_ego_x = []
-    traj_ego_y = []
+    traj_ego_x, traj_ego_y = [], []
 
     plt.figure(figsize=(12, 8))
-    while getDistance([ego.x, ego.y], goal) > 1:
-        target_point = traj.getTargetPoint([ego.x, ego.y])
 
-        # Use PID to control the vehicle
-        vel_err = target_vel - ego.vel
-        acc = PI_acc.control(vel_err)
+    try:
+        while getDistance([ego.x, ego.y], goal) > 1:
+            target_point = traj.getTargetPoint([ego.x, ego.y])
+            vel_err = target_vel - ego.vel
+            acc = PI_acc.control(vel_err)
+            yaw_err = math.atan2(target_point[1] - ego.y, target_point[0] - ego.x) - ego.yaw
+            delta = PI_yaw.control(yaw_err)
 
-        yaw_err = math.atan2(target_point[1] - ego.y, target_point[0] - ego.x) - ego.yaw
-        delta = PI_yaw.control(yaw_err)
+            ego.update(acc, delta)
 
-        # Move the vehicle
-        ego.update(acc, delta)
+            # Gửi lệnh (v, delta) qua TCP
+            send_control_command(sock, ego.vel, delta)
 
-        # Store the trajectory
-        traj_ego_x.append(ego.x)
-        traj_ego_y.append(ego.y)
+            traj_ego_x.append(ego.x)
+            traj_ego_y.append(ego.y)
 
-        # Plotting
-        plt.cla()
-        plt.plot(traj_x, traj_y, "-r", linewidth=5, label="course")
-        plt.plot(traj_ego_x, traj_ego_y, "-b", linewidth=2, label="trajectory")
-        plt.plot(target_point[0], target_point[1], "og", ms=5, label="target point")
-        plotVehicle(ego.x, ego.y, ego.yaw, delta)
-        plt.xlabel("x[m]")
-        plt.ylabel("y[m]")
-        plt.axis("equal")
-        plt.legend()
-        plt.grid(True)
-        plt.pause(0.1)
+            plt.cla()
+            plt.plot(traj_x, traj_y, "-r", linewidth=5, label="course")
+            plt.plot(traj_ego_x, traj_ego_y, "-b", linewidth=2, label="trajectory")
+            plt.plot(target_point[0], target_point[1], "og", ms=5, label="target point")
+            plotVehicle(ego.x, ego.y, ego.yaw, delta)
+            plt.xlabel("x[m]")
+            plt.ylabel("y[m]")
+            plt.axis("equal")
+            plt.legend()
+            plt.grid(True)
+            plt.pause(0.1)
+    finally:
+        sock.close()
+        print("Đã đóng kết nối TCP.")
 
 
 if __name__ == "__main__":

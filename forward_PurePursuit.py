@@ -1,13 +1,12 @@
 import json
 import math
-import matplotlib.pyplot as plt
 import numpy as np
 import socket
 
-L = 38  # look ahead distance
-dt = 0.1  # discrete time
+L = 38  # Look ahead distance in meters
+dt = 0.1  # Discrete time step (seconds)
 
-# Vehicle parameters (m)
+# Vehicle parameters (meters)
 LENGTH = 43
 WIDTH = 21
 BACKTOWHEEL = 9
@@ -16,150 +15,18 @@ WHEEL_WIDTH = 2.2
 TREAD = 16
 WB = 25
 
-
-def plotVehicle(x, y, yaw, steer=0.0, cabcolor="-r", truckcolor="-k"):
-    """
-    The function is to plot the vehicle
-    it is copied from https://github.com/AtsushiSakai/PythonRobotics/blob/187b6aa35f3cbdeca587c0abdb177adddefc5c2a/PathTracking/model_predictive_speed_and_steer_control/model_predictive_speed_and_steer_control.py#L109
-    """
-    outline = np.array(
-        [
-            [
-                -BACKTOWHEEL,
-                (LENGTH - BACKTOWHEEL),
-                (LENGTH - BACKTOWHEEL),
-                -BACKTOWHEEL,
-                -BACKTOWHEEL,
-            ],
-            [WIDTH / 2, WIDTH / 2, -WIDTH / 2, -WIDTH / 2, WIDTH / 2],
-        ]
-    )
-
-    fr_wheel = np.array(
-        [
-            [WHEEL_LEN, -WHEEL_LEN, -WHEEL_LEN, WHEEL_LEN, WHEEL_LEN],
-            [
-                -WHEEL_WIDTH - TREAD,
-                -WHEEL_WIDTH - TREAD,
-                WHEEL_WIDTH - TREAD,
-                WHEEL_WIDTH - TREAD,
-                -WHEEL_WIDTH - TREAD,
-            ],
-        ]
-    )
-
-    rr_wheel = np.copy(fr_wheel)
-
-    fl_wheel = np.copy(fr_wheel)
-    fl_wheel[1, :] *= -1
-    rl_wheel = np.copy(rr_wheel)
-    rl_wheel[1, :] *= -1
-
-    Rot1 = np.array([[math.cos(yaw), math.sin(yaw)], [-math.sin(yaw), math.cos(yaw)]])
-    Rot2 = np.array(
-        [[math.cos(steer), math.sin(steer)], [-math.sin(steer), math.cos(steer)]]
-    )
-
-    fr_wheel = (fr_wheel.T.dot(Rot2)).T
-    fl_wheel = (fl_wheel.T.dot(Rot2)).T
-    fr_wheel[0, :] += WB
-    fl_wheel[0, :] += WB
-
-    fr_wheel = (fr_wheel.T.dot(Rot1)).T
-    fl_wheel = (fl_wheel.T.dot(Rot1)).T
-
-    outline = (outline.T.dot(Rot1)).T
-    rr_wheel = (rr_wheel.T.dot(Rot1)).T
-    rl_wheel = (rl_wheel.T.dot(Rot1)).T
-
-    outline[0, :] += x
-    outline[1, :] += y
-    fr_wheel[0, :] += x
-    fr_wheel[1, :] += y
-    rr_wheel[0, :] += x
-    rr_wheel[1, :] += y
-    fl_wheel[0, :] += x
-    fl_wheel[1, :] += y
-    rl_wheel[0, :] += x
-    rl_wheel[1, :] += y
-
-    plt.plot(
-        np.array(outline[0, :]).flatten(), np.array(outline[1, :]).flatten(), truckcolor
-    )
-    plt.plot(
-        np.array(fr_wheel[0, :]).flatten(),
-        np.array(fr_wheel[1, :]).flatten(),
-        truckcolor,
-    )
-    plt.plot(
-        np.array(rr_wheel[0, :]).flatten(),
-        np.array(rr_wheel[1, :]).flatten(),
-        truckcolor,
-    )
-    plt.plot(
-        np.array(fl_wheel[0, :]).flatten(),
-        np.array(fl_wheel[1, :]).flatten(),
-        truckcolor,
-    )
-    plt.plot(
-        np.array(rl_wheel[0, :]).flatten(),
-        np.array(rl_wheel[1, :]).flatten(),
-        truckcolor,
-    )
-    plt.plot(x, y, "*")
-
-
-def getDistance(p1, p2):
-    """
-    Calculate distance
-    :param p1: list, point1
-    :param p2: list, point2
-    :return: float, distance
-    """
-    dx = p1[0] - p2[0]
-    dy = p1[1] - p2[1]
-    return math.hypot(dx, dy)
-
-
+# Define the vehicle class
 class Vehicle:
-    def __init__(self, x, y, yaw, vel=0, max_steering_angle_deg=30):
-        """
-        Define a vehicle class
-        :param x: float, x position
-        :param y: float, y position
-        :param yaw: float, vehicle heading
-        :param vel: float, velocity
-        :param max_steering_angle_deg: float, max steering angle in degrees
-        """
+    def __init__(self, x, y, yaw, vel=10, max_steering_angle_deg=30):
         self.x = x
         self.y = y
         self.yaw = yaw
         self.vel = vel
-        # Giới hạn góc lái là 30 độ (tức là từ -30 đến 30 độ)
-        self.max_steering_angle = math.radians(max_steering_angle_deg)  # convert to radians
+        self.max_steering_angle = math.radians(max_steering_angle_deg)  # Convert to radians
 
-    def update(self, acc, delta):
-        """
-        Vehicle motion model, here we are using simple bicycle model
-        :param acc: float, acceleration
-        :param delta: float, heading control (steering angle)
-        """
-        # Giới hạn góc lái trong phạm vi từ -30 độ đến 30 độ (tương đương với -math.radians(30) đến math.radians(30))
-        delta = max(-self.max_steering_angle, min(self.max_steering_angle, delta))
-
-        self.x += self.vel * math.cos(self.yaw) * dt
-        self.y += self.vel * math.sin(self.yaw) * dt
-        self.yaw += self.vel * math.tan(delta) / WB * dt
-        self.vel += acc * dt
-
-
+# Trajectory class for handling path points
 class Trajectory:
     def __init__(self, traj_x, traj_y):
-        """
-        Define a trajectory class
-        :param traj_x: list, list of x position
-        :param traj_y: list, list of y position
-        """
         self.traj_x = traj_x
         self.traj_y = traj_y
         self.last_idx = 0
@@ -168,11 +35,6 @@ class Trajectory:
         return [self.traj_x[idx], self.traj_y[idx]]
 
     def getTargetPoint(self, pos):
-        """
-        Get the next look ahead point
-        :param pos: list, vehicle position
-        :return: list, target point
-        """
         target_idx = self.last_idx
         target_point = self.getPoint(target_idx)
         curr_dist = getDistance(pos, target_point)
@@ -185,15 +47,15 @@ class Trajectory:
         self.last_idx = target_idx
         return self.getPoint(target_idx)
 
+# Helper function for calculating distance
+def getDistance(p1, p2):
+    dx = p1[0] - p2[0]
+    dy = p1[1] - p2[1]
+    return math.hypot(dx, dy)
 
+# PI Controller for controlling vehicle speed and steering angle
 class PI:
     def __init__(self, kp=1.0, ki=0.1):
-        """
-        Define a PID controller class
-        :param kp: float, kp coeff
-        :param ki: float, ki coeff
-        :param kd: float, kd coeff
-        """
         self.kp = kp
         self.ki = ki
         self.Pterm = 0.0
@@ -201,23 +63,13 @@ class PI:
         self.last_error = 0.0
 
     def control(self, error):
-        """
-        PID main function, given an input, this function will output a control unit
-        :param error: float, error term
-        :return: float, output control
-        """
         self.Pterm = self.kp * error
         self.Iterm += error * dt
-
-        self.last_error = error
         output = self.Pterm + self.ki * self.Iterm
         return output
 
-
+# Load trajectory from file
 def load_trajectory_from_file(filename):
-    """
-    Đọc dữ liệu quỹ đạo từ file JSON và trả về danh sách các điểm [x, y, yaw].
-    """
     try:
         with open(filename, 'r') as file:
             data = json.load(file)
@@ -229,37 +81,45 @@ def load_trajectory_from_file(filename):
         print(f"Error: Failed to decode JSON from file {filename}.")
         return []
 
-
+# Function to send control commands via TCP
 def send_control_command(sock, v, delta_rad):
-    """
-    Gửi lệnh điều khiển tới server qua TCP.
-    Định dạng:  "v,delta_deg\n"
-        v          : vận tốc (cm/s)
-        delta_deg  : góc lái, chuyển sang độ trước khi gửi
-    """
     try:
-        delta_deg = math.degrees(delta_rad)  # rad → °
-        message = f"{v / 100:.3f},{delta_deg:.3f}\n"  # 3 chữ số lẻ cho gọn
+        delta_deg = math.degrees(delta_rad)  # Convert rad to degrees
+        message = f"{v / 100:.3f},{delta_deg:.3f}\n"  # Format the message
         sock.sendall(message.encode("utf-8"))
     except Exception as e:
         print(f"Lỗi khi gửi dữ liệu: {e}")
 
+# Function to receive real-time feedback (position data) from another program
+def receive_feedback(sock):
+    try:
+        # Receive data from the connected client (feedback from sensors, like GPS, IMU, etc.)
+        data = sock.recv(1024).decode('utf-8')  # Receive feedback data as string
+        if data:
+            feedback = data.split(",")  # Assuming the format is: "x,y,yaw"
+            return float(feedback[0]), float(feedback[1]), float(feedback[2])  # return x, y, yaw
+        return None, None, None
+    except Exception as e:
+        print(f"Lỗi khi nhận dữ liệu: {e}")
+        return None, None, None
 
+# Main function to control the vehicle
 def main():
-    # Địa chỉ IP và cổng TCP server
-    TCP_IP = "127.0.0.1"  # Thay bằng địa chỉ thực tế
+    TCP_IP = "127.0.0.1"
     TCP_PORT = 5000
 
-    # Tạo socket TCP
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.connect((TCP_IP, TCP_PORT))
-        print("Đã kết nối TCP tới server.")
+        sock.bind((TCP_IP, TCP_PORT))
+        sock.listen(1)
+        print(f"Đang lắng nghe kết nối từ chương trình khác tại {TCP_IP}:{TCP_PORT}...")
+        client_socket, client_address = sock.accept()
+        print(f"Đã kết nối với {client_address}")
     except Exception as e:
         print(f"Lỗi kết nối TCP: {e}")
         return
 
-    # Đọc quỹ đạo từ file JSON
+    # Load trajectory from file
     json_file = "path_data.json"
     traj_data = load_trajectory_from_file(json_file)
 
@@ -272,7 +132,7 @@ def main():
     traj_yaw = [point[2] for point in traj_data]
 
     start_x, start_y, start_yaw = traj_x[0], traj_y[0], traj_yaw[0]
-    target_vel = 10
+    target_vel = 10  # Constant velocity in cm/s
     traj = Trajectory(traj_x, traj_y)
     goal = traj.getPoint(len(traj_x) - 1)
 
@@ -280,41 +140,50 @@ def main():
     PI_acc = PI()
     PI_yaw = PI()
 
-    traj_ego_x, traj_ego_y = [], []
-
-    plt.figure(figsize=(12, 8))
-
     try:
         while getDistance([ego.x, ego.y], goal) > 1:
+            # Calculate target point for look ahead
             target_point = traj.getTargetPoint([ego.x, ego.y])
+
+            # Receive feedback (position data) from another program (e.g., GPS, IMU)
+            ego.x, ego.y, ego.yaw = receive_feedback(client_socket)
+
+            if ego.x is None:  # If no valid feedback is received, continue with the loop
+                print("Không nhận được dữ liệu feedback, tiếp tục.")
+                continue
+
+            # Calculate error for velocity and yaw
             vel_err = target_vel - ego.vel
             acc = PI_acc.control(vel_err)
+
+            # Calculate yaw error as the difference between target yaw and current yaw
+            # Target yaw is not directly available, so we use the direction from current position to target point
             yaw_err = math.atan2(target_point[1] - ego.y, target_point[0] - ego.x) - ego.yaw
-            delta = PI_yaw.control(yaw_err)
 
-            ego.update(acc, delta)
+            # Normalize yaw error to be within [-pi, pi]
+            yaw_err = (yaw_err + math.pi) % (2 * math.pi) - math.pi  # Normalize between -pi and pi
 
-            # Gửi lệnh (v, delta) qua TCP
-            send_control_command(sock, ego.vel, delta)
+            # If yaw error is very small (meaning we are going straight), set delta to 0
+            if abs(yaw_err) < 0.05:  # Tolerance threshold for yaw error
+                delta = 0
+            else:
+                delta = PI_yaw.control(yaw_err)
 
-            traj_ego_x.append(ego.x)
-            traj_ego_y.append(ego.y)
+            # Ensure delta is within the allowed range [-30, 30] degrees
+            delta = max(-math.radians(30), min(math.radians(30), delta))
 
-            plt.cla()
-            plt.plot(traj_x, traj_y, "-r", linewidth=5, label="course")
-            plt.plot(traj_ego_x, traj_ego_y, "-b", linewidth=2, label="trajectory")
-            plt.plot(target_point[0], target_point[1], "og", ms=5, label="target point")
-            plotVehicle(ego.x, ego.y, ego.yaw, delta)
-            plt.xlabel("x[m]")
-            plt.ylabel("y[m]")
-            plt.axis("equal")
-            plt.legend()
-            plt.grid(True)
-            plt.pause(0.1)
+            # Send control command (velocity and steering angle) over TCP
+            send_control_command(client_socket, ego.vel, delta)
+
+            # Print current target point, velocity and steering angle
+            print(f"Target Point: {target_point}")
+            print(f"Current Velocity: {ego.vel} cm/s")
+            print(f"Steering Angle: {math.degrees(delta):.2f} degrees")
+
     finally:
+        client_socket.close()
         sock.close()
         print("Đã đóng kết nối TCP.")
-
 
 if __name__ == "__main__":
     main()

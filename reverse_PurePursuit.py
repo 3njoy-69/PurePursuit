@@ -1,12 +1,12 @@
 import json
 import math
+import numpy as np
 import socket
 
-# === Simulation parameters ===
-dt = 0.1  # time step [s]
-L_lookahead = 18  # look-ahead distance [m]
+L = 18  # Look ahead distance in meters
+dt = 0.1  # Discrete time step (seconds)
 
-# Vehicle parameters (m)
+# Vehicle parameters (meters)
 LENGTH = 43
 WIDTH = 21
 BACKTOWHEEL = 9
@@ -17,59 +17,75 @@ WB = 25
 
 # Define the vehicle class
 class Vehicle:
-    """Rear-axle bicycle kinematics."""
-
-    def __init__(self, x, y, yaw, vel=0, max_steering_angle_deg=30):
+    def __init__(self, x, y, yaw, vel=-10, max_steering_angle_deg=30):  # Negative velocity for reverse
         self.x = x
         self.y = y
         self.yaw = yaw
         self.vel = vel
-        # Giới hạn góc lái là 30 độ (tức là từ -30 đến 30 độ)
-        self.max_steering_angle = math.radians(max_steering_angle_deg)  # convert to radians
+        self.max_steering_angle = math.radians(max_steering_angle_deg)  # Convert to radians
 
+# Trajectory class for handling path points
 class Trajectory:
-    """Hold path points and provide look-ahead target."""
-    def __init__(self, xs, ys):
-        self.xs = xs
-        self.ys = ys
+    def __init__(self, traj_x, traj_y):
+        self.traj_x = traj_x
+        self.traj_y = traj_y
         self.last_idx = 0
 
-    def getTargetPoint(self, pos):
-        idx = self.last_idx
-        # iterate forward through path
-        while idx + 1 < len(self.xs) and getDistance(pos, [self.xs[idx], self.ys[idx]]) < L_lookahead:
-            idx += 1
-        self.last_idx = idx
-        return [self.xs[idx], self.ys[idx]]
+    def getPoint(self, idx):
+        return [self.traj_x[idx], self.traj_y[idx]]
 
+    def getTargetPoint(self, pos):
+        target_idx = self.last_idx
+        target_point = self.getPoint(target_idx)
+        curr_dist = getDistance(pos, target_point)
+
+        while curr_dist < L and target_idx < len(self.traj_x) - 1:
+            target_idx += 1
+            target_point = self.getPoint(target_idx)
+            curr_dist = getDistance(pos, target_point)
+
+        self.last_idx = target_idx
+        return self.getPoint(target_idx)
+
+# Helper function for calculating distance
+def getDistance(p1, p2):
+    dx = p1[0] - p2[0]
+    dy = p1[1] - p2[1]
+    return math.hypot(dx, dy)
+
+# PI Controller for controlling vehicle speed and steering angle
 class PI:
-    """Simple PI controller."""
     def __init__(self, kp=1.0, ki=0.1):
         self.kp = kp
         self.ki = ki
-        self.I = 0.0
+        self.Pterm = 0.0
+        self.Iterm = 0.0
+        self.last_error = 0.0
 
     def control(self, error):
-        self.I += error * dt
-        return self.kp * error + self.ki * self.I
+        self.Pterm = self.kp * error
+        self.Iterm += error * dt
+        output = self.Pterm + self.ki * self.Iterm
+        return output
 
-
-def loadTrajectory(filename):
-    with open(filename, 'r') as f:
-        data = json.load(f)
-    # list of [x,y,yaw]
-    return data
-
-def send_control_command(sock, v, delta_rad):
-    """
-    Gửi lệnh điều khiển tới server qua TCP.
-    Định dạng:  "v,delta_deg\n"
-        v          : vận tốc (cm/s)
-        delta_deg  : góc lái, chuyển sang độ trước khi gửi
-    """
+# Load trajectory from file
+def load_trajectory_from_file(filename):
     try:
-        delta_deg = math.degrees(delta_rad)  # rad → °
-        message = f"{v / 100:.3f},{delta_deg:.3f}\n"  # 3 chữ số lẻ cho gọn
+        with open(filename, 'r') as file:
+            data = json.load(file)
+        return [(point[0], point[1], point[2]) for point in data]
+    except FileNotFoundError:
+        print(f"Error: File {filename} not found.")
+        return []
+    except json.JSONDecodeError:
+        print(f"Error: Failed to decode JSON from file {filename}.")
+        return []
+
+# Function to send control commands via TCP
+def send_control_command(sock, v, delta_rad):
+    try:
+        delta_deg = math.degrees(delta_rad)  # Convert rad to degrees
+        message = f"{v / 100:.3f},{delta_deg:.3f}\n"  # Format the message
         sock.sendall(message.encode("utf-8"))
     except Exception as e:
         print(f"Lỗi khi gửi dữ liệu: {e}")
@@ -87,21 +103,9 @@ def receive_feedback(sock):
         print(f"Lỗi khi nhận dữ liệu: {e}")
         return None, None, None
 
-def getDistance(p1, p2):
-    """Euclidean distance between two points."""
-    return math.hypot(p1[0]-p2[0], p1[1]-p2[1])
-
-def check_socket_connection(sock):
-    """Check if socket is still connected."""
-    try:
-        sock.send(b'')  # Try sending an empty byte to see if it's still open
-        return True
-    except (socket.error, OSError):
-        return False
-
+# Main function to control the vehicle
 def main():
-    # Địa chỉ IP và cổng TCP server
-    TCP_IP = "127.0.0.1"  # Thay bằng địa chỉ thực tế
+    TCP_IP = "127.0.0.1"
     TCP_PORT = 5000
 
     try:
@@ -115,62 +119,79 @@ def main():
         print(f"Lỗi kết nối TCP: {e}")
         return
 
-    # load path
-    path = loadTrajectory('path_data.json')
-    xs = [p[0] for p in path]
-    ys = [p[1] for p in path]
-    yaws = [p[2] for p in path]
+    # Load trajectory from file
+    json_file = "path_data.json"
+    traj_data = load_trajectory_from_file(json_file)
 
-    # initialize vehicle at first point, reverse speed
-    target_vel = -10.0  # m/s (negative => reverse)
-    ego = Vehicle(xs[0], ys[0], yaws[0], vel=target_vel)
+    if not traj_data:
+        print("Quỹ đạo không được tải về, dừng chương trình.")
+        return
 
-    # controllers
-    pid_acc   = PI(kp=1.0, ki=0.1)
-    pid_steer = PI(kp=2.0, ki=0.1)
+    traj_x = [point[0] for point in traj_data]
+    traj_y = [point[1] for point in traj_data]
+    traj_yaw = [point[2] for point in traj_data]
 
-    traj = Trajectory(xs, ys)
-    goal = [xs[-1], ys[-1]]
+    start_x, start_y, start_yaw = traj_x[0], traj_y[0], traj_yaw[0]
+    target_vel = -10  # Constant negative velocity for reverse (cm/s)
+    traj = Trajectory(traj_x, traj_y)
+    goal = traj.getPoint(len(traj_x) - 1)
 
-    while getDistance([ego.x, ego.y], goal) > 1:
-        # look-ahead target
-        tp = traj.getTargetPoint([ego.x, ego.y])
+    ego = Vehicle(start_x, start_y, start_yaw)
+    PI_acc = PI()
+    PI_yaw = PI()
 
-        # longitudinal control
-        acc = pid_acc.control(target_vel - ego.vel)
+    try:
+        while getDistance([ego.x, ego.y], goal) > 1:  # Loop until the vehicle is within 1 meter of the goal
+            # Calculate target point for look ahead
+            target_point = traj.getTargetPoint([ego.x, ego.y])
 
-        # desired heading
-        yaw_des = math.atan2(tp[1]-ego.y, tp[0]-ego.x)
-        if ego.vel < 0:
-            # flip for reverse
-            yaw_des = (yaw_des + math.pi) % (2*math.pi)
-
-        # heading error normalized
-        err = (yaw_des - ego.yaw + math.pi) % (2*math.pi) - math.pi
-        # steering control
-        ctrl = pid_steer.control(err)
-        # invert steering for reverse
-        delta = -ctrl if ego.vel < 0 else ctrl
-
-        # update vehicle
-        # Receive feedback (position data) from another program (e.g., GPS, IMU)
-        if check_socket_connection(client_socket):
+            # Receive feedback (position data) from another program (e.g., GPS, IMU)
             ego.x, ego.y, ego.yaw = receive_feedback(client_socket)
-        else:
-            print("Socket connection lost. Terminating.")
-            break
 
-        # Gửi lệnh (v, delta) qua TCP
-        send_control_command(client_socket, ego.vel, delta)
+            if ego.x is None:  # If no valid feedback is received, continue with the loop
+                print("Không nhận được dữ liệu feedback, tiếp tục.")
+                continue
 
-        # In ra target point, velocity, và steering angle
-        print(f"Target Point: {tp}")
-        print(f"Current Velocity: {ego.vel} m/s")
-        print(f"Steering Angle: {math.degrees(delta):.2f} degrees")
+            # Calculate error for velocity and yaw
+            vel_err = target_vel - ego.vel
+            acc = PI_acc.control(vel_err)
 
-    print('Done reverse follow')
-    client_socket.close()
-    sock.close()
+            # Calculate yaw error as the difference between target yaw and current yaw
+            yaw_err = math.atan2(target_point[1] - ego.y, target_point[0] - ego.x) - ego.yaw
 
-if __name__ == '__main__':
+            # Flip for reverse (reverse vehicle has the opposite yaw control)
+            yaw_err = (yaw_err + math.pi) % (2 * math.pi)
+
+            # Normalize yaw error to be within [-pi, pi]
+            yaw_err = (yaw_err + math.pi) % (2 * math.pi) - math.pi  # Normalize between -pi and pi
+
+            # If yaw error is very small (meaning we are going straight), set delta to 0
+            if abs(yaw_err) < 0.05:  # Tolerance threshold for yaw error
+                delta = 0
+            else:
+                delta = PI_yaw.control(yaw_err) * -1
+
+            # Ensure delta is within the allowed range [-30, 30] degrees
+            delta = max(-math.radians(30), min(math.radians(30), delta))
+
+            # Check if the vehicle has reached the goal (within a 1-meter threshold)
+            if getDistance([ego.x, ego.y], goal) <= 1:
+                print("Xe đã đến điểm cuối. Dừng lại.")
+                ego.vel = 0  # Set velocity to 0 to stop the vehicle
+                delta = 0  # Ensure the steering angle is also set to 0
+
+            # Send control command (velocity and steering angle) over TCP
+            send_control_command(client_socket, ego.vel, delta)
+
+            # Print current target point, velocity and steering angle
+            print(f"Target Point: {target_point}")
+            print(f"Current Velocity: {ego.vel} cm/s")
+            print(f"Steering Angle: {math.degrees(delta):.2f} degrees")
+
+    finally:
+        client_socket.close()
+        sock.close()
+        print("Đã đóng kết nối TCP.")
+
+if __name__ == "__main__":
     main()

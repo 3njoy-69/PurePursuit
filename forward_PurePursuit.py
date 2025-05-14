@@ -141,7 +141,7 @@ def main():
     PI_yaw = PI()
 
     try:
-        while getDistance([ego.x, ego.y], goal) > 1:
+        while getDistance([ego.x, ego.y], goal) > 1:  # Loop until the vehicle is within 1 meter of the goal
             # Calculate target point for look ahead
             target_point = traj.getTargetPoint([ego.x, ego.y])
 
@@ -157,7 +157,6 @@ def main():
             acc = PI_acc.control(vel_err)
 
             # Calculate yaw error as the difference between target yaw and current yaw
-            # Target yaw is not directly available, so we use the direction from current position to target point
             yaw_err = math.atan2(target_point[1] - ego.y, target_point[0] - ego.x) - ego.yaw
 
             # Normalize yaw error to be within [-pi, pi]
@@ -171,6 +170,12 @@ def main():
 
             # Ensure delta is within the allowed range [-30, 30] degrees
             delta = max(-math.radians(30), min(math.radians(30), delta))
+
+            # Check if the vehicle has reached the goal (within a 1-meter threshold)
+            if getDistance([ego.x, ego.y], goal) <= 1:
+                print("Xe đã đến điểm cuối. Dừng lại.")
+                ego.vel = 0  # Set velocity to 0 to stop the vehicle
+                delta = 0  # Ensure the steering angle is also set to 0
 
             # Send control command (velocity and steering angle) over TCP
             send_control_command(client_socket, ego.vel, delta)

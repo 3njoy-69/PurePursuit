@@ -105,18 +105,30 @@ def receive_feedback(sock):
 
 # Main function to control the vehicle
 def main():
-    TCP_IP = "127.0.0.1"
-    TCP_PORT = 5000
+    # Keep the existing feedback connection
+    FB_IP = "127.0.0.1"
+    FB_PORT = 5000
 
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.bind((TCP_IP, TCP_PORT))
+        sock.bind((FB_IP, FB_PORT))
         sock.listen(1)
-        print(f"Đang lắng nghe kết nối từ chương trình khác tại {TCP_IP}:{TCP_PORT}...")
+        print(f"Đang lắng nghe kết nối từ chương trình khác tại {FB_IP}:{FB_PORT}...")
         client_socket, client_address = sock.accept()
         print(f"Đã kết nối với {client_address}")
     except Exception as e:
         print(f"Lỗi kết nối TCP: {e}")
+        return
+
+    # Create a new socket to send control data to another TCP server
+    Ctrl_IP = "127.0.0.1"  # Địa chỉ IP của server mới
+    Ctrl_PORT = 5678  # Cổng của server mới
+    try:
+        new_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        new_sock.connect((Ctrl_IP, Ctrl_PORT))  # Kết nối đến server mới
+        print(f"Đã kết nối với {Ctrl_IP}:{Ctrl_PORT}")
+    except Exception as e:
+        print(f"Lỗi kết nối đến server mới: {e}")
         return
 
     # Load trajectory from file
@@ -180,8 +192,8 @@ def main():
                 ego.vel = 0  # Set velocity to 0 to stop the vehicle
                 delta = 0  # Ensure the steering angle is also set to 0
 
-            # Send control command (velocity and steering angle) over TCP
-            send_control_command(client_socket, ego.vel, delta)
+            # Send control command (velocity and steering angle) over the new TCP connection
+            send_control_command(new_sock, ego.vel, delta)
 
             # Print current target point, velocity and steering angle
             print(f"Target Point: {target_point}")
